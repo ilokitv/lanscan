@@ -29,11 +29,31 @@ type ScanResult struct {
 
 // Получение имени устройства по IP
 func getHostname(ip string) string {
+	// Сначала пробуем получить имя через DNS
 	names, err := net.LookupAddr(ip)
-	if err != nil || len(names) == 0 {
-		return "Неизвестно"
+	if err == nil && len(names) > 0 {
+		return strings.TrimSuffix(names[0], ".")
 	}
-	return strings.TrimSuffix(names[0], ".")
+
+	// Если DNS не сработал, пробуем получить имя через NBT (для Windows машин в сети)
+	if runtime.GOOS != "windows" {
+		cmd := exec.Command("nmblookup", "-A", ip)
+		output, err := cmd.Output()
+		if err == nil {
+			// Ищем имя хоста в выводе nmblookup
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "<00>") {
+					fields := strings.Fields(line)
+					if len(fields) > 0 {
+						return fields[0]
+					}
+				}
+			}
+		}
+	}
+
+	return "Неизвестно"
 }
 
 // Получение MAC-адреса по IP
@@ -46,7 +66,12 @@ func getMACAddress(ip string) string {
 		cmd = exec.Command("arp", "-a", ip)
 		macRegex = regexp.MustCompile(`([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})`)
 	default: // Linux и MacOS
-		cmd = exec.Command("arp", "-n", ip)
+		// Сначала пингуем хост для обновления ARP-таблицы
+		pingCmd := exec.Command("ping", "-c", "1", "-W", "1", ip)
+		pingCmd.Run()
+
+		// Пробуем разные варианты команд для получения MAC-адреса
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("ip neigh show %s 2>/dev/null || arp -n %s 2>/dev/null || arp %s 2>/dev/null", ip, ip, ip))
 		macRegex = regexp.MustCompile(`([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}`)
 	}
 
